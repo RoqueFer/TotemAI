@@ -2,9 +2,9 @@ from ultralytics import YOLO
 import os
 
 # 1. Carregar modelo base
-model = YOLO('yolov8n.pt')  # Ou yolov8s.pt para maior precisão
+model = YOLO('yolov8n.pt') 
 
-# 2. Treinar com seu dataset
+# 2. Treinar com o dataset
 results = model.train(
     data=os.path.join(r'C:\Users\User\Desktop\AI-Totem\datasets', r'C:\Users\User\Desktop\AI-Totem\datasets\fruits_yolo', r'C:\Users\User\Desktop\AI-Totem\datasets\fruits_yolo\data.yaml'),
     epochs=100,
