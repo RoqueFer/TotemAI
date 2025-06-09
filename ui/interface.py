@@ -1,55 +1,92 @@
-import cv2
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.screenmanager import ScreenManager, Screen
 from kivy.uix.camera import Camera
-from kivy.uix.image import Image as KivyImage # Renomeado para evitar conflito com Image do Pillow ou OpenCV
-from kivy.graphics.texture import Texture
+from kivy.uix.image import Image
 from kivy.graphics import Color, Rectangle
 from kivy.clock import Clock
-import numpy as np
-import threading # Para rodar o processamento da câmera em uma thread separada
-from queue import Queue # Para comunicação segura entre threads
+import os
 
-# Importar o ProductDetector
-from vision.product_detector import ProductDetector
+# Create dummy image files for demonstration if they don't exist
+if not os.path.exists('qr_placeholder.png'):
+    try:
+        from PIL import Image as PILImage
+        from PIL import ImageDraw
 
-# Variável global para armazenar o detector e a fila de comunicação
-product_detector = None
-frame_queue = Queue(maxsize=1) # Fila para passar frames da câmera para a thread de detecção
-detection_queue = Queue(maxsize=1) # Fila para passar detecções da thread de detecção para a UI
+        # Create a simple white image with black text for QR code placeholder
+        img = PILImage.new('RGB', (200, 200), color = 'white')
+        d = ImageDraw.Draw(img)
+        d.text((10,10), "Simulated QR Code", fill=(0,0,0))
+        img.save("qr_placeholder.png")
+        print("Generated dummy qr_placeholder.png")
+    except ImportError:
+        print("Pillow library not found. Please install it (`pip install Pillow`) or manually create 'qr_placeholder.png' for QR code simulation.")
+        print("Using a blank image placeholder for QR code screen.")
+        # Fallback if Pillow is not installed, the Image widget will simply be blank.
+
+if not os.path.exists('card_placeholder.png'):
+    try:
+        from PIL import Image as PILImage
+        from PIL import ImageDraw
+        # Create a simple card outline for the card placeholder image
+        img = PILImage.new('RGB', (200, 200), color = 'white')
+        d = ImageDraw.Draw(img)
+        d.rectangle([50, 70, 150, 130], outline="black", width=5) # Card body
+        d.rectangle([60, 80, 140, 90], fill="black") # Magnetic stripe simulation
+        img.save("card_placeholder.png")
+        print("Generated dummy card_placeholder.png")
+    except ImportError:
+        print("Pillow library not found. Please install it (`pip install Pillow`) or manually create 'card_placeholder.png'.")
+
+if not os.path.exists('checkmark_placeholder.png'):
+    try:
+        from PIL import Image as PILImage
+        from PIL import ImageDraw
+        # Create a simple green checkmark for the success placeholder image
+        img = PILImage.new('RGB', (200, 200), color = 'white')
+        d = ImageDraw.Draw(img)
+        d.line([(50, 100), (90, 140), (150, 60)], fill="green", width=10) # Checkmark shape
+        img.save("checkmark_placeholder.png")
+        print("Generated dummy checkmark_placeholder.png")
+    except ImportError:
+        print("Pillow library not found. Please install it (`pip install Pillow`) or manually create 'checkmark_placeholder.png'.")
+
 
 class ShoppingCart(Screen):
+    """
+    Tela principal do carrinho de compras, com visualização da câmera e lista de produtos.
+    """
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         
         # Layout principal vertical
         main_layout = BoxLayout(orientation='vertical')
-        # Layout horizontal separado
+        
+        # Layout horizontal para a visualização da câmera e a lista de produtos
         content_layout = BoxLayout(orientation='horizontal', size_hint_y=0.8)
         
-        # Parte esquerda - Visualização da câmera (50% da largura)
-        # Substituímos Camera por Image para ter controle sobre a textura
-        self.camera_display = KivyImage(size_hint_x=0.6, allow_stretch=True, keep_ratio=False)
-        content_layout.add_widget(self.camera_display)
+        # Parte esquerda - Visualização da câmera (60% da largura)
+        # resolution=(640, 480) define a resolução da câmera.
+        self.camera_view = Camera(resolution=(640, 480), size_hint_x=0.6) 
+        self.camera_view.play = True # Inicia a câmera
+        content_layout.add_widget(self.camera_view)
         
-        # Parte direita - Lista de produtos (50% da largura)
+        # Parte direita - Lista de produtos (40% da largura)
         self.product_list = Label(text='Produtos identificados aparecerão aqui\n',
                                   size_hint_x=0.4,
-                                  valign='top', # Alinha o texto no topo
-                                  padding_x=10, # Adiciona padding horizontal
-                                  text_size=(self.width * 0.4 - 20, None) # Limita a largura do texto
-                                 )
+                                  valign='top', # Alinha o texto ao topo
+                                  halign='left', # Alinha o texto à esquerda
+                                  padding=[10, 10]) # Adiciona preenchimento
         content_layout.add_widget(self.product_list)
         
         # Adiciona a área bipartida ao layout principal
         main_layout.add_widget(content_layout)
         
-        # Área de botões (20% da tela)
+        # Área de botões (20% da altura da tela)
         btn_layout = BoxLayout(orientation='horizontal', size_hint_y=0.2)
-        self.checkout_btn = Button(text='Finalizar Compra')
+        self.checkout_btn = Button(text='Finalizar Compra', font_size='20sp')
         self.checkout_btn.bind(on_press=self.checkout)
         btn_layout.add_widget(self.checkout_btn)
         
@@ -57,274 +94,235 @@ class ShoppingCart(Screen):
         main_layout.add_widget(btn_layout)
         
         self.add_widget(main_layout)
-
-        # Inicializa a câmera OpenCV e agenda a captura
-        self.capture = None
-        self.detector = None
-        self.event = None # Para agendar a atualização da câmera
-
-    def on_enter(self, *args):
-        """Chamado quando esta tela se torna ativa."""
-        global product_detector
-        # Inicializa o detector de produtos apenas uma vez
-        if product_detector is None:
-            try:
-                product_detector = ProductDetector()
-            except Exception as e:
-                print(f"Não foi possível inicializar o ProductDetector: {e}")
-                # Exibir uma mensagem de erro na UI
-                self.product_list.text = f"Erro: {e}\nNão foi possível iniciar a detecção."
-                return
-
-        self.detector = product_detector
-        self.capture = cv2.VideoCapture(0) # Inicia a captura de vídeo
-        if not self.capture.isOpened():
-            print("Erro ao abrir a câmera!")
-            self.product_list.text = "Erro: Não foi possível acessar a câmera."
-            return
-
-        # Ajusta a resolução da captura (opcional, pode ser limitada pela câmera)
-        self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-
-        # Agenda a função de atualização da câmera
-        self.event = Clock.schedule_interval(self.update_camera_frame, 1.0 / 30.0) # 30 FPS
-
-        # Inicia a thread de processamento da visão
-        self.vision_thread = threading.Thread(target=self.run_vision_processing, daemon=True)
-        self.vision_thread.start()
-        
-        # Agenda a atualização da lista de produtos na UI
-        Clock.schedule_interval(self.update_product_list, 1.0) # Atualiza a cada 1 segundo
-
-    def on_leave(self, *args):
-        """Chamado quando esta tela deixa de ser ativa."""
-        if self.event:
-            self.event.cancel() # Cancela o agendamento da câmera
-        if self.capture:
-            self.capture.release() # Libera a câmera do OpenCV
-        # Não precisa parar a thread explicitamente se ela for daemon
-        
-    def update_camera_frame(self, dt):
-        """Captura um frame da câmera e o exibe."""
-        ret, frame = self.capture.read()
-        if ret:
-            # Coloca o frame na fila para ser processado pela thread de visão
-            try:
-                frame_queue.put_nowait(frame) # Tenta colocar sem bloquear
-            except Exception:
-                pass # Se a fila estiver cheia, ignora o frame (reduz o backlog)
-
-            # Para exibir o frame na UI (mesmo sem detecções ainda)
-            buf = cv2.flip(frame, 0).tobytes() # Inverte e converte para bytes
-            image_texture = Texture.create(size=(frame.shape[1], frame.shape[0]), colorfmt='bgr')
-            image_texture.blit_buffer(buf, colorfmt='bgr', bufferfmt='ubyte')
-            self.camera_display.texture = image_texture
-        else:
-            print("Não foi possível ler o frame da câmera.")
-
-    def run_vision_processing(self):
-        """Função que roda na thread separada para processar frames."""
-        while True:
-            try:
-                frame = frame_queue.get(timeout=0.1) # Pega um frame da fila (com timeout)
-                if self.detector:
-                    detections, frame_with_detections = self.detector.detect_products(frame)
-                    
-                    # Coloca as detecções e o frame processado na fila para a UI
-                    try:
-                        detection_queue.put_nowait((detections, frame_with_detections))
-                    except Exception:
-                        pass # Se a fila estiver cheia, ignora (UI está lenta)
-                frame_queue.task_done() # Marca a tarefa como concluída na fila
-            except Exception as e:
-                # print(f"Thread de visão esperando por frames ou erro: {e}")
-                pass # A fila pode estar vazia ou a thread pode estar desligando
-
-    def update_product_list(self, dt):
-        """Atualiza a lista de produtos na UI com base nas detecções."""
-        try:
-            detections, frame_with_detections = detection_queue.get_nowait()
-            
-            # Atualiza o display da câmera com o frame que tem as detecções desenhadas
-            # A imagem do YOLOv8 (frame_with_detections) já vem em BGR
-            buf = cv2.flip(frame_with_detections, 0).tobytes()
-            image_texture = Texture.create(size=(frame_with_detections.shape[1], frame_with_detections.shape[0]), colorfmt='bgr')
-            image_texture.blit_buffer(buf, colorfmt='bgr', bufferfmt='ubyte')
-            self.camera_display.texture = image_texture
-
-            # Processa as detecções e atualiza a lista de produtos
-            product_counts = {}
-            for d in detections:
-                product_name = d['class']
-                if product_name in product_counts:
-                    product_counts[product_name] += 1
-                else:
-                    product_counts[product_name] = 1
-            
-            list_text = "🛒 Produtos Identificados:\n\n"
-            if not product_counts:
-                list_text += "Nenhum produto detectado."
-            else:
-                for product, count in product_counts.items():
-                    list_text += f"- {product.capitalize()}: {count}\n"
-            
-            self.product_list.text = list_text
-            
-            detection_queue.task_done()
-        except Exception:
-            pass # Fila de detecções vazia ou erro ao processar
-
+    
     def checkout(self, instance):
+        """
+        Função para navegar para a tela de checkout.
+        """
         self.manager.current = 'checkout'
 
-# As outras classes (CheckOut, PixPaymentScreen, CardWaitingScreen) permanecem as mesmas
-# ... (código existente para CheckOut, PixPaymentScreen, CardWaitingScreen) ...
-
 class CheckOut(Screen):
-    # ... (Seu código existente para CheckOut) ...
+    """
+    Tela de checkout para seleção do método de pagamento.
+    """
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         
         # Layout principal vertical
-        main_layout = BoxLayout(orientation='vertical')
+        main_layout = BoxLayout(orientation='vertical', padding=20, spacing=10)
         
         # Label de instrução
         self.payment_label = Label(text='Selecione o método de pagamento:', 
-                                   size_hint_y=0.2)
+                                   size_hint_y=0.2,
+                                   font_size='22sp',
+                                   halign='center',
+                                   valign='middle')
         main_layout.add_widget(self.payment_label)
         
-        # Layout de botões de pagamento (60% da tela)
-        payment_layout = BoxLayout(orientation='horizontal', size_hint_y=0.6)
+        # Layout de botões de pagamento (60% da altura da tela)
+        payment_layout = BoxLayout(orientation='horizontal', size_hint_y=0.6, spacing=10)
         
-        self.pix_btn = Button(text='PIX')
+        self.pix_btn = Button(text='PIX', font_size='24sp')
         self.pix_btn.bind(on_press=lambda x: self.process_payment('PIX'))
         payment_layout.add_widget(self.pix_btn)
         
-        self.credit_btn = Button(text='Cartão de Crédito')
+        self.credit_btn = Button(text='Cartão de Crédito', font_size='24sp')
         self.credit_btn.bind(on_press=lambda x: self.process_payment('Cartão de Crédito'))
         payment_layout.add_widget(self.credit_btn)
         
-        self.debit_btn = Button(text='Cartão de Débito')
+        self.debit_btn = Button(text='Cartão de Débito', font_size='24sp')
         self.debit_btn.bind(on_press=lambda x: self.process_payment('Cartão de Débito'))
         payment_layout.add_widget(self.debit_btn)
         
         main_layout.add_widget(payment_layout)
         
-        # Botão voltar (20% da tela)
-        back_btn = Button(text='Voltar', size_hint_y=0.2)
+        # Botão voltar (20% da altura da tela)
+        back_btn = Button(text='Voltar', size_hint_y=0.2, font_size='20sp')
         back_btn.bind(on_press=self.go_back)
         main_layout.add_widget(back_btn)
         
         self.add_widget(main_layout)
     
     def process_payment(self, method):
+        """
+        Processa a seleção do método de pagamento e navega para a tela apropriada.
+        """
         if method == 'PIX':
             self.manager.current = 'pix_payment'
         else:
             self.manager.current = 'card_waiting'
-            # Configura o texto com o método de pagamento selecionado
+            # Configura o texto com o método de pagamento selecionado na tela de espera do cartão
             card_screen = self.manager.get_screen('card_waiting')
             card_screen.update_payment_method(method)
     
     def go_back(self, instance):
+        """
+        Função para voltar à tela do carrinho de compras.
+        """
         self.manager.current = 'shopping'
 
 class PixPaymentScreen(Screen):
-    # ... (Seu código existente para PixPaymentScreen) ...
+    """
+    Tela de pagamento PIX com QR Code simulado e instruções.
+    """
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         
-        layout = BoxLayout(orientation='vertical')
+        layout = BoxLayout(orientation='vertical', padding=20, spacing=10)
         
         # Título
-        title = Label(text='Pagamento via PIX', size_hint_y=0.2, font_size='20sp')
+        title = Label(text='Pagamento via PIX', size_hint_y=0.2, font_size='28sp', bold=True)
         layout.add_widget(title)
         
         # QR Code (simulado)
-        self.qr_code = KivyImage(source='', size_hint_y=0.5)  # Você pode substituir por um QR code real
+        # O source será definido em on_enter para garantir que a tela esteja visível.
+        self.qr_code = Image(source='', size_hint=(0.7, 0.5), pos_hint={'center_x': 0.5}) 
         layout.add_widget(self.qr_code)
         
         # Instruções
         instructions = Label(text='Escaneie o QR Code acima usando seu aplicativo de pagamento\n'
                                   'Pagamento válido por 30 minutos',
                                   size_hint_y=0.2,
-                                  halign='center')
+                                  halign='center',
+                                  valign='middle',
+                                  font_size='18sp')
         layout.add_widget(instructions)
         
         # Valor total
-        self.total_label = Label(text='Total: R$ 0,00', size_hint_y=0.1)
+        self.total_label = Label(text='Total: R$ 0,00', size_hint_y=0.1, font_size='24sp', bold=True)
         layout.add_widget(self.total_label)
         
         # Botão de voltar
-        back_btn = Button(text='Voltar', size_hint_y=0.1)
+        back_btn = Button(text='Voltar', size_hint_y=0.1, font_size='20sp')
         back_btn.bind(on_press=self.go_back)
         layout.add_widget(back_btn)
         
         self.add_widget(layout)
     
     def on_enter(self):
-        # Simula a geração de um QR Code (na prática, você usaria uma biblioteca para gerar o QR)
-        self.qr_code.source = 'qr_placeholder.png'  # Substitua por um QR code real
-        # Aqui você atualizaria o valor total também
-        self.total_label.text = 'Total: R$ 99,99'  # Substitua pelo valor real
+        """
+        Chamado quando a tela é exibida. Atualiza o QR Code e o valor total.
+        """
+        # Simula a geração de um QR Code. Na prática, você usaria uma biblioteca
+        # (como `qrcode`) para gerar um QR code real a partir de dados de pagamento.
+        self.qr_code.source = 'qr_placeholder.png'  # Caminho para uma imagem de QR code
+        self.qr_code.reload() # Garante que a imagem seja recarregada
+        
+        # Aqui você atualizaria o valor total também, provavelmente obtido de um modelo de dados.
+        self.total_label.text = 'Total: R$ 99,99'  # Substitua pelo valor real do carrinho
     
     def go_back(self, instance):
+        """
+        Função para voltar à tela de checkout.
+        """
         self.manager.current = 'checkout'
 
 class CardWaitingScreen(Screen):
-    # ... (Seu código existente para CardWaitingScreen) ...
+    """
+    Tela de espera de pagamento via cartão, com ícone e instruções.
+    """
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         
+        # Desenha um retângulo de fundo preto para combinar com o estilo geral
         with self.canvas.before:
-            Color(0.95, 0.95, 0.95, 1)  # Cor de fundo cinza claro
+            Color(0, 0, 0, 1)  
             self.rect = Rectangle(size=self.size, pos=self.pos)
         
+        # Atualiza a posição e o tamanho do retângulo quando a tela muda
         self.bind(size=self._update_rect, pos=self._update_rect)
         
-        layout = BoxLayout(orientation='vertical')
+        layout = BoxLayout(orientation='vertical', padding=20, spacing=10)
         
-        # Ícone de cartão (simulado)
-        self.card_icon = Label(text='💳', font_size='50sp', size_hint_y=0.3)
+        # Ícone de cartão (agora uma imagem placeholder)
+        self.card_icon = Image(source='card_placeholder.png', size_hint=(0.4, 0.3), pos_hint={'center_x': 0.5}) 
         layout.add_widget(self.card_icon)
         
         # Instruções
         self.instructions = Label(text='Por favor, faça o pagamento na máquina de cartão ao lado',
                                   size_hint_y=0.3,
                                   halign='center',
-                                  font_size='18sp')
+                                  valign='middle',
+                                  font_size='22sp',
+                                  markup=True,
+                                  color=(1,1,1,1)) # Cor branca para o texto
         layout.add_widget(self.instructions)
         
         # Método de pagamento
-        self.payment_method = Label(text='', size_hint_y=0.2, font_size='16sp')
+        self.payment_method = Label(text='', size_hint_y=0.2, font_size='20sp', halign='center', valign='middle', color=(1,1,1,1)) # Cor branca para o texto
         layout.add_widget(self.payment_method)
         
-        # Status
-        self.status_label = Label(text='Aguardando pagamento...', size_hint_y=0.2)
+        # Status do pagamento
+        self.status_label = Label(text='Aguardando pagamento...', size_hint_y=0.2, font_size='24sp', bold=True, color=(0.2, 0.5, 0.8, 1)) # Azul
         layout.add_widget(self.status_label)
-        
+
+        # Adiciona um botão para simular a aprovação (para fins de demonstração)
+        self.simulate_btn = Button(text='Simular Aprovação', size_hint_y=0.1, font_size='18sp')
+        self.simulate_btn.bind(on_press=lambda x: self.simulate_payment(0)) # Chama simulate_payment imediatamente
+        layout.add_widget(self.simulate_btn)
+
+        # Novo botão "Voltar"
+        back_btn = Button(text='Voltar', size_hint_y=0.1, font_size='20sp')
+        back_btn.bind(on_press=self.go_back)
+        layout.add_widget(back_btn)
+
         self.add_widget(layout)
     
     def _update_rect(self, instance, value):
+        """
+        Atualiza o tamanho e a posição do retângulo de fundo.
+        """
         self.rect.size = instance.size
         self.rect.pos = instance.pos
     
     def update_payment_method(self, method):
+        """
+        Atualiza o texto do método de pagamento exibido na tela.
+        """
         self.payment_method.text = f'Método: {method}'
     
     def on_enter(self):
-        # Simula o processamento do pagamento
-        Clock.schedule_once(self.simulate_payment, 5)
+        """
+        Chamado quando a tela é exibida. Redefine o status e agenda a simulação.
+        """
+        self.status_label.text = 'Aguardando pagamento...'
+        self.card_icon.source = 'card_placeholder.png' # Define a imagem inicial do cartão
+        self.card_icon.reload() # Recarrega a imagem para garantir que apareça
+        self.status_label.color = (0.2, 0.5, 0.8, 1) # Azul novamente
+        self.simulate_btn.opacity = 1 # Garante que o botão de simulação esteja visível
+        self.simulate_btn.disabled = False # Habilita o botão de simulação
+        # Remove qualquer agendamento anterior para evitar múltiplas chamadas
+        Clock.unschedule(self.simulate_payment)
     
     def simulate_payment(self, dt):
-        # Esta função seria substituída pela verificação real do pagamento
+        """
+        Simula o resultado do pagamento (aprovado ou reprovado).
+        Esta função seria substituída pela verificação real do status do pagamento
+        com um terminal de cartão de crédito.
+        """
         self.status_label.text = 'Pagamento aprovado!'
-        self.card_icon.text = '✅'
+        self.card_icon.source = 'checkmark_placeholder.png' # Altera para a imagem de checkmark
+        self.card_icon.reload() # Recarrega a imagem
+        self.status_label.color = (0, 0.8, 0, 1) # Cor verde para aprovado
+        self.simulate_btn.opacity = 0 # Esconde o botão após a simulação
+        self.simulate_btn.disabled = True # Desabilita o botão
+        # Volta para a tela de compras após um curto atraso
         Clock.schedule_once(lambda x: self.manager.current == 'shopping', 2)
 
+    def go_back(self, instance):
+        """
+        Função para voltar à tela de seleção de formas de pagamento (checkout).
+        """
+        self.manager.current = 'checkout'
+
 class AITotemApp(App):
+    """
+    A classe principal da aplicação Kivy.
+    """
     def build(self):
+        """
+        Constrói o gerenciador de telas e adiciona todas as telas à aplicação.
+        """
         sm = ScreenManager()
         sm.add_widget(ShoppingCart(name='shopping'))
         sm.add_widget(CheckOut(name='checkout'))
