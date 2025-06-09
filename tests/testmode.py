@@ -5,7 +5,7 @@ from ultralytics import YOLO # Importar a classe YOLO do ultralytics
 
 # Caminho base do seu projeto (ajuste se necessário)
 # Isso ajuda a construir caminhos relativos de forma mais robusta
-PROJECT_ROOT = Path("C:/AI-Totem-20250609T013644Z-1-001/AI-Totem")
+PROJECT_ROOT = Path("C:/AI_Totem/AI-Totem")
 
 # 1. Carregue seu modelo YOLO
 # Recomendado: Usar o modelo 'best.pt' treinado com suas frutas
@@ -83,6 +83,6 @@ def testar_imagem(caminho_imagem):
 # 4. Teste!
 if __name__ == "__main__":
     # Substitua pelo caminho da SUA imagem de teste usando o PROJECT_ROOT
-    imagem_teste = PROJECT_ROOT / "tests" / "fotostestes" / "abacaxi.jpg"
+    imagem_teste = PROJECT_ROOT / "tests" / "fotostestes" / "uva.jpg"
     
     testar_imagem(imagem_teste)
