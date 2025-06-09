@@ -4,51 +4,45 @@ import numpy as np
 from pathlib import Path
 
 class ProductDetector:
-    # O construtor não precisa de model_path como argumento se ele for sempre o mesmo
-    # Ou se você quer um valor padrão, mas calculado dinamicamente
     def __init__(self):
-        
         try:
-            # Assumindo que a raiz do projeto é a pasta "AI-Totem"
-            # Path(__file__).resolve() -> C:\Ai_Totem\AI-Totem\vision\product_detector.py
-            # .parents[0] -> C:\Ai_Totem\AI-Totem\vision
-            # .parents[1] -> C:\Ai_Totem\AI-Totem (Esta é a raiz do seu projeto)
             project_root = Path(__file__).resolve().parents[1] 
-
-            # Agora construa o caminho para o seu best.pt a partir da raiz do projeto
-            # ESTA É A LINHA CORRETA para definir self.model_path
-            self.model_path = project_root / "runs" / "detect" / "fruits_yolo3" / "weights" / "best.pt"
+           
+            self.model_path = project_root / "runs" / "detect" / "fruits_yolo_retrain" / "weights" / "best.pt"
             
-            # OU se preferir usar o yolov8n.pt global que você tem:
-            # self.model_path = project_root / "yolov8n.pt"
-
             if not self.model_path.exists():
-                raise FileNotFoundError(f"Modelo não encontrado em: {self.model_path}")
+                self.model_path = project_root / "runs" / "detect" / "fruits_yolo3" / "weights" / "best.pt"
+                if not self.model_path.exists():
+                    raise FileNotFoundError(f"Modelo não encontrado em: {project_root / 'runs' / 'detect' / 'fruits_yolo_retrain' / 'weights' / 'best.pt'} ou {project_root / 'runs' / 'detect' / 'fruits_yolo3' / 'weights' / 'best.pt'}")
 
-            self.model = YOLO(str(self.model_path)) # str() necessário para YOLO
+
+            self.model = YOLO(str(self.model_path))
             print(f"Modelo YOLO carregado com sucesso de: {self.model_path}")
             
-            # Configurações do modelo
-            self.model.conf = 0.5  # Limiar de confiança
-            self.model.iou = 0.45 # Limiar de IOU para Non-Maximum Suppression
+            
+            # limiar de confiança: reduzi para ser menos restritivo.
+            self.model.conf = 0.70 
+
+        
+            self.model.iou = 0.25 
 
         except Exception as e:
             print(f"Erro ao carregar o modelo YOLO: {e}")
-            raise # Levante a exceção para que o app saiba que algo deu errado
+            raise # relança a exceção para que o Kivy saiba que houve um erro na inicialização
 
-        self.class_names = self.load_class_names()
-        
-    def load_class_names(self):
-        if self.model and hasattr(self.model.names, 'values'):
-            return list(self.model.names.values())
-        return ['produto_desconhecido'] # Fallback
+        # as classes são carregadas do próprio modelo YOLO
+        self.class_names = self.model.names if hasattr(self.model, 'names') else ['produto_desconhecido']
+        # converte os valores do dicionário para uma lista de strings
+        if isinstance(self.class_names, dict):
+            self.class_names = list(self.class_names.values())
         
     def detect_products(self, frame):
-        results = self.model(frame)
+        results = self.model(frame) 
         detections = []
         
+        # iterar sobre os resultados (pode haver mais de um se batch for maior que 1)
         for result in results:
-            if result.boxes:
+            if result.boxes: # verifica se há caixas detectadas
                 boxes = result.boxes.xyxy.cpu().numpy()
                 confs = result.boxes.conf.cpu().numpy()
                 cls_ids = result.boxes.cls.cpu().numpy().astype(int)
@@ -58,9 +52,10 @@ class ProductDetector:
                     detections.append({
                         'class': class_name,
                         'confidence': float(conf),
-                        'bbox': box.tolist()
+                        'bbox': box.tolist() # coordenadas [x1, y1, x2, y2]
                     })
             
+            # o método .plot() desenha as caixas e labels no frame
             frame_with_detections = result.plot()
                 
         return detections, frame_with_detections
